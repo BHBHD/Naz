@@ -24,6 +24,7 @@ parser.read('config.ini')
 patten = re.compile(r"^[A-Za-z0-9_]*$")
 accountTypeList = ["business", "personal", "nonprofit", "trust"]
 locale.setlocale(locale.LC_ALL, '')
+log = logging.getLogger(__name__)
 
 ADMIN_ROLE = parser.getint('server', 'admin-role-id')
 REQUEST_CHANNEL_ID = parser.getint('server', 'request-channel-id')
@@ -60,14 +61,8 @@ def is_account_holder():
     return commands.check(predicate)
 
 
-class RequestCheckFailure(commands.CheckFailure):
-
-    def __init__(self):
-        self.message = "You cannot request for an account here!"
-
-
 class Bank(commands.Cog, name='Bank'):
-    """"""
+    """Bank which stores your money and handle new request forms other bank commands."""
 
     def __init__(self, bot):
         self.bot = bot
