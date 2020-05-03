@@ -7,6 +7,7 @@ from random import randint
 import sqlite3
 import asyncio
 import discord
+import logging
 import locale
 import re
 import io
@@ -22,7 +23,7 @@ parser = ConfigParser()
 parser.read('config.ini')
 patten = re.compile(r"^[A-Za-z0-9_]*$")
 accountTypeList = ["business", "personal", "nonprofit", "trust"]
-locale.setlocale( locale.LC_ALL, '' )
+locale.setlocale(locale.LC_ALL, '')
 
 ADMIN_ROLE = parser.getint('server', 'admin-role-id')
 REQUEST_CHANNEL_ID = parser.getint('server', 'request-channel-id')
@@ -149,6 +150,18 @@ class Bank(commands.Cog, name='Bank'):
         cur.close()
         conn.commit()
 
+    @requests.error
+    async def requests_error(self, ctx, error):
+        """This is a check for if user is using the command in REQUEST_CHANNEL_ID or not."""
+        if isinstance(error, commands.CheckFailure):
+            channel = ctx.guild.get_channel(REQUEST_CHANNEL_ID)
+            e = discord.Embed(color=self.bot.color)
+            e.timestamp = datetime.utcnow()
+            e.set_footer(text=self.bot.user.name, icon_url=self.bot.user.avatar_url)
+            e.description = f"{ctx.author.mention} Sorry you cannot use this command here!\n" \
+                            f"Please request for an account here: {channel.mention}"
+            await ctx.send(embed=e)
+
     @commands.group(name='bank')
     @commands.guild_only()
     @is_account_holder()
@@ -159,6 +172,8 @@ class Bank(commands.Cog, name='Bank'):
 
     @banks.error
     async def banks_error(self, ctx, error):
+        """This will give the error if user didn't open a account. All an all this is a check to see if user have
+        andy account or not. If not bot will tell him to request an account and restrict user to use further commands"""
         if isinstance(error, commands.CheckFailure):
             e = discord.Embed(color=self.bot.color)
             e.timestamp = datetime.utcnow()
@@ -635,3 +650,4 @@ class Bank(commands.Cog, name='Bank'):
 
 def setup(bot):
     bot.add_cog(Bank(bot))
+    log.info("Bank Cog/Module Loaded Successfully!")
