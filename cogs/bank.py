@@ -7,7 +7,6 @@ from random import randint
 import sqlite3
 import asyncio
 import discord
-import logging
 import locale
 import re
 import io
@@ -23,8 +22,7 @@ parser = ConfigParser()
 parser.read('config.ini')
 patten = re.compile(r"^[A-Za-z0-9_]*$")
 accountTypeList = ["business", "personal", "nonprofit", "trust"]
-locale.setlocale(locale.LC_ALL, '')
-log = logging.getLogger(__name__)
+locale.setlocale( locale.LC_ALL, '' )
 
 ADMIN_ROLE = parser.getint('server', 'admin-role-id')
 REQUEST_CHANNEL_ID = parser.getint('server', 'request-channel-id')
@@ -61,8 +59,14 @@ def is_account_holder():
     return commands.check(predicate)
 
 
+class RequestCheckFailure(commands.CheckFailure):
+
+    def __init__(self):
+        self.message = "You cannot request for an account here!"
+
+
 class Bank(commands.Cog, name='Bank'):
-    """Bank which stores your money and handle new request forms other bank commands."""
+    """"""
 
     def __init__(self, bot):
         self.bot = bot
@@ -145,18 +149,6 @@ class Bank(commands.Cog, name='Bank'):
         cur.close()
         conn.commit()
 
-    @requests.error
-    async def requests_error(self, ctx, error):
-        """This is a check for if user is using the command in REQUEST_CHANNEL_ID or not."""
-        if isinstance(error, commands.CheckFailure):
-            channel = ctx.guild.get_channel(REQUEST_CHANNEL_ID)
-            e = discord.Embed(color=self.bot.color)
-            e.timestamp = datetime.utcnow()
-            e.set_footer(text=self.bot.user.name, icon_url=self.bot.user.avatar_url)
-            e.description = f"{ctx.author.mention} Sorry you cannot use this command here!\n" \
-                            f"Please request for an account here: {channel.mention}"
-            await ctx.send(embed=e)
-
     @commands.group(name='bank')
     @commands.guild_only()
     @is_account_holder()
@@ -167,8 +159,6 @@ class Bank(commands.Cog, name='Bank'):
 
     @banks.error
     async def banks_error(self, ctx, error):
-        """This will give the error if user didn't open a account. All an all this is a check to see if user have
-        andy account or not. If not bot will tell him to request an account and restrict user to use further commands"""
         if isinstance(error, commands.CheckFailure):
             e = discord.Embed(color=self.bot.color)
             e.timestamp = datetime.utcnow()
@@ -565,13 +555,27 @@ class Bank(commands.Cog, name='Bank'):
                     f"WHERE user_id = {ctx.author.id}")
         accounts = cur.fetchall()
 
+        if len(accounts) <= 0:
+            e.title = "*Accounts*"
+            e.description = "Accounts not found!"
+            await ctx.send(embed=e)
+            return
+
         headers = ["ClientName", "AccountType", "AccountName", "ClientType", "Balance"]
         table = TabularData()
         table.set_columns(headers)
-        table.add_rows(list(r for r in accounts))
+        full = []
+        for r in accounts:
+            this = [f"{ctx.author.name}", f"{r[0]}", f"{r[1]}",
+                    f"{'owner' if r[2] is None else 'authorized'}", f"{currency(r[3], grouping=True)}"]
+            full.append(this)
+            # print(this)
+
+        table.add_rows(list(r for r in full))
+        # print(list(r for r in accounts))
         render = table.render()
 
-        fmt = f'```\n{render}\n```\n*Returned {plural(len(accounts)):account}*'
+        fmt = f'```\n{render}\n```\n*You got {plural(len(accounts)):account}*'
         if len(fmt) > 2000:
             fp = io.BytesIO(fmt.encode('utf-8'))
             await ctx.send('Too many results...', file=discord.File(fp, 'results.txt'))
@@ -645,4 +649,3 @@ class Bank(commands.Cog, name='Bank'):
 
 def setup(bot):
     bot.add_cog(Bank(bot))
-    log.info("Bank Cog/Module Loaded Successfully!")
