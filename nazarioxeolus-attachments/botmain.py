@@ -36,27 +36,6 @@ def ids(ids):
         accounts_data["item info"].append([])
         accounts_data["item value"].append([])
 
-@bot.command()
-async def accounts(ctx):
-    try:
-        index_in = accounts_data["id"].index(ctx.message.author.id)
-        if accounts_data["account name"][index_in] == []:
-            raise ValueError
-    except ValueError:
-        await ctx.send(embed=discord.Embed(title="**Accounts details**", description="You have no accounts."))
-        return 0
-    embed = discord.Embed(title="**Accounts details**",
-                          description="Detail of {} accounts.".format(len(accounts_data["account name"][index_in])))
-    embed.add_field(name="Account name", value="\n".join(
-        accounts_data["account name"][index_in]))
-    embed.add_field(name="Account type", value="\n".join(
-        accounts_data["account type"][index_in]))
-    embed.add_field(name="Account balance", value="\n".join(
-        ["$"+str(i) for i in accounts_data["balance"][index_in]]))
-    embed.add_field(name="Account registered", value="\n".join(
-        [str(i) for i in accounts_data["account registered"][index_in]]))
-    await ctx.send(embed=embed)
-
 
 @bot.command()
 async def item(ctx, account_name=None, mode=None, item_name=None, item_type=None, item_info=None, item_value=None):

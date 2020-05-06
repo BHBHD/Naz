@@ -22,7 +22,7 @@ parser = ConfigParser()
 parser.read('config.ini')
 patten = re.compile(r"^[A-Za-z0-9_]*$")
 accountTypeList = ["business", "personal", "nonprofit", "trust"]
-locale.setlocale( locale.LC_ALL, '' )
+locale.setlocale(locale.LC_ALL, '')
 
 ADMIN_ROLE = parser.getint('server', 'admin-role-id')
 REQUEST_CHANNEL_ID = parser.getint('server', 'request-channel-id')
@@ -57,12 +57,6 @@ def is_account_holder():
                 return True
         return False
     return commands.check(predicate)
-
-
-class RequestCheckFailure(commands.CheckFailure):
-
-    def __init__(self):
-        self.message = "You cannot request for an account here!"
 
 
 class Bank(commands.Cog, name='Bank'):

@@ -23,7 +23,7 @@ ACTIVITY_INTERVAL = parser.getint('default', 'activity-change-time-interval')
 description = "A bot made in Python by ɃĦɃĦĐ#2224 for naz#6078 upon his requirements"
 activities = []
 initial_extensions = ['cogs.owner', 'cogs.errors', 'cogs.misc',
-                      'cogs.bank']
+                      'cogs.bank', 'cogs.item']
 
 with open("src/activities.csv", "r", encoding='utf-8') as f:
     reader = csv.reader(f, delimiter=",")
