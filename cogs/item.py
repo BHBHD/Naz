@@ -1,3 +1,4 @@
+from .utils.formats import TabularData, plural
 from configparser import ConfigParser
 from discord.ext import commands
 from datetime import datetime
@@ -7,10 +8,13 @@ import logging
 import discord
 import sqlite3
 import locale
+import json
+import io
 
 parser = ConfigParser()
 parser.read('config.ini')
 ADMIN_ROLE = parser.getint('server', 'admin-role-id')
+locale.setlocale(locale.LC_ALL, '')
 
 
 conn = sqlite3.connect('src/naz.db')
@@ -73,20 +77,23 @@ class Item(commands.Cog, name='Items'):
         e = discord.Embed(title='Item Create!')
         e.timestamp = datetime.utcnow()
         e.set_footer(text=self.bot.user.name, icon_url=self.bot.user.avatar_url)
+        cur = conn.cursor()
+
+        # Fetch Item Category
+        with open('src/itemC.json', encoding='utf-8') as f:
+            data = json.load(f)
 
         iCList = ""
         onlyCList = []
-        cur = conn.cursor()
-        cur.execute(f"SELECT iCName FROM itemCategory")
-        iC = cur.fetchall()
+        if len(data["iC"]) <= 0:
+            e.description = "There is'nt any itemCategory! Please contact staff!"
+            await ques.edit(embed=e)
+            return
+        for category in data["iC"]:
+            iCList += f"{category}\n"
+            onlyCList.append(category)
 
-        if len(iC) <= 0:
-            iCList = "There is'nt any itemCategory! Please contact staff!"
-
-        for category in iC:
-            iCList += f"{category[0]}\n"
-            onlyCList.append(category[0])
-
+        # Check account details and balance
         e.description = 'Please type in the corresponding bank account name you wish to use to take funds from ' \
                         'to pay for item creation’s value.\n' \
                         'Type “cancel” to cancel this form.'
@@ -97,9 +104,10 @@ class Item(commands.Cog, name='Items'):
             await self.item_cancel(ques)
             return
 
-        cur.execute(f"SELECT accountBal FROM accounts WHERE accountName = '{accountName}'")
+        cur.execute(f"SELECT accountBal, accountNo FROM accounts WHERE accountName = '{accountName}'")
         accountHolder = cur.fetchone()
         if accountHolder is None:
+            e.color = discord.Color.red()
             e.title = "Item Creation Error"
             e.description = "This is not a valid bank account name and therefore your application has been " \
                             "terminated. Please try again by using !item"
@@ -118,7 +126,7 @@ class Item(commands.Cog, name='Items'):
 
         e.title = 'Item Category!'
         e.description = f'Please select one of the following categories this item belongs to:\n' \
-                        f'```{iCList}```\n' \
+                        f'```\n{iCList}\n```\n' \
                         f'Type “cancel” to cancel this form.'
         await ques.edit(embed=e)
         itemCategorie = await self.wait_for(ctx, ques)
@@ -150,26 +158,226 @@ class Item(commands.Cog, name='Items'):
             return
 
         # Check details
-        if itemCategorie in onlyCList:
-            e.title = 'Item Creation Error'
-            e.description = "This is not a valid category name and therefore your application has been " \
+        for x in onlyCList:
+            if itemCategorie.lower() == x.lower():
+                if int(itemValue) >= accountHolder[0]:
+                    e.title = 'Item Creation Error'
+                    e.description = "Insufficient balance in your account and therefore your application has been " \
+                                    "terminated. Please try again by using !item"
+                    await ques.edit(embed=e)
+                    return
+
+                else:
+                    confirm = await ctx.prompt(f"Are you sure that you wants to create an new **{itemName}**?")
+                    if not confirm:
+                        e.color = discord.Color.red()
+                        e.title = 'Item Creation'
+                        e.description = "Application has been terminated."
+                        await ques.edit(embed=e)
+                        return
+
+                    cur.execute(
+                        f"CREATE TABLE IF NOT EXISTS `{accountHolder[1]}`('itemName' TEXT, 'itemCategory' TEXT, "
+                        f"'itemDescription' TEXT, 'itemValue' REAL, 'accountName' TEXT)")
+                    conn.commit()
+                    cur.execute(f"INSERT INTO `{accountHolder[1]}` (itemName, itemCategory, itemDescription, "
+                                f"itemValue, accountName) VALUES ('{itemName}', '{itemCategorie}', "
+                                f"'{itemDescription}', {itemValue}, '{accountName}')")
+                    cur.execute(f"UPDATE accounts SET accountBal = {float(accountHolder[0]) - float(itemValue)} "
+                                f"WHERE accountName = '{accountName}'")
+                    cur.close()
+                    conn.commit()
+                    e.color = discord.Color.green()
+                    e.title = f"Item Created!"
+                    e.description = "Item Create Successfully with the following information!"
+                    e.add_field(name="*Item Name:* ", value=f"***{itemName}***")
+                    e.add_field(name="*Item Category:* ", value=f"***{itemCategorie}***")
+                    e.add_field(name="*Item Description:* ", value=f"***{itemDescription}***")
+                    e.add_field(name="*Item Value:* ", value=f"***{itemValue}***")
+                    await ques.edit(embed=e)
+                    return
+
+        e.color = discord.Color.red()
+        e.title = 'Item Creation Error'
+        e.description = "This is not a valid category name and therefore your application has been " \
+                        "terminated. Please try again by using !item"
+        await ques.edit(embed=e)
+        return
+
+    async def item_edit(self, ctx, ques):
+        e = discord.Embed(title='Item Edit!')
+        e.timestamp = datetime.utcnow()
+        e.set_footer(text=self.bot.user.name, icon_url=self.bot.user.avatar_url)
+        cur = conn.cursor()
+
+        # Check account details and balance
+        e.description = 'Please type in the corresponding bank account name which was linked to that item.\n' \
+                        'Type “cancel” to cancel this form.'
+        await ques.edit(embed=e)
+        accountName = await self.wait_for(ctx, ques)
+
+        if accountName == 'cancel':
+            await self.item_cancel(ques)
+            return
+
+        cur.execute(f"SELECT accountBal, accountNo FROM accounts WHERE accountName = '{accountName}'")
+        accountHolder = cur.fetchone()
+        if accountHolder is None:
+            e.color = discord.Color.red()
+            e.title = "Item Modification Error"
+            e.description = "This is not a valid bank account name and therefore your application has been " \
                             "terminated. Please try again by using !item"
             await ques.edit(embed=e)
             return
 
-        if int(itemValue) >= accountHolder[0]:
-            e.title = 'Item Creation Error'
-            e.description = "Insufficient balance in your account and therefore your application has been " \
+        # Modification stats here
+        e.description = 'Please enter the item name you wish to edit\n' \
+                        'Type “cancel” to cancel this form.'
+        await ques.edit(embed=e)
+        itemName = await self.wait_for(ctx, ques)
+
+        cur.execute(f"SELECT itemName FROM `{accountHolder[1]}` WHERE itemName = '{itemName}'")
+        validItemName = cur.fetchone()
+        if validItemName is None:
+            e.color = discord.Color.red()
+            e.title = "Item Modification Error"
+            e.description = "This item is not registered to your account Please try again!"
+            await ques.edit(embed=e)
+            return
+
+        e.description = 'Please enter an extensive description of this item. Make sure you cover all necessary ' \
+                        'in-game details. \nType “cancel” to cancel this form'
+        await ques.edit(embed=e)
+        itemDescription = await self.wait_for(ctx, ques)
+
+        cur.execute(f"UPDATE `{accountHolder[1]}` SET itemDescription = '{itemDescription}' "
+                    f"WHERE itemName = '{itemName}'")
+        cur.close()
+        conn.commit()
+        e.color = discord.Color.green()
+        e.title = "Edit successful"
+        e.description = "You have successfully edited your item’s description."
+        await ques.edit(embed=e)
+
+    async def item_show(self, ctx, ques):
+        e = discord.Embed(title='Item Show!')
+        e.timestamp = datetime.utcnow()
+        e.set_footer(text=self.bot.user.name, icon_url=self.bot.user.avatar_url)
+        cur = conn.cursor()
+
+        # Check account details and balance
+        e.description = 'Please type in the corresponding bank account name which is linked to that item.\n' \
+                        'Type “cancel” to cancel this form.'
+        await ques.edit(embed=e)
+        accountName = await self.wait_for(ctx, ques)
+
+        if accountName == 'cancel':
+            await self.item_cancel(ques)
+            return
+
+        cur.execute(f"SELECT accountBal, accountNo FROM accounts WHERE accountName = '{accountName}'")
+        accountHolder = cur.fetchone()
+        if accountHolder is None:
+            e.color = discord.Color.red()
+            e.title = "Item Modification Error"
+            e.description = "This is not a valid bank account name and therefore your application has been " \
                             "terminated. Please try again by using !item"
             await ques.edit(embed=e)
             return
 
-        confirm = await ctx.prompt(f"Are you sure that you wants to create an new **{itemName}**?")
+        # Ask itemName
+        e.description = 'Please enter the item name you wish to look up.\n' \
+                        'Type “cancel” to cancel this form.'
+        await ques.edit(embed=e)
+        itemName = await self.wait_for(ctx, ques)
+
+        if accountName == 'cancel':
+            await self.item_cancel(ques)
+            return
+
+        cur.execute(f"SELECT itemName, itemCategory, itemDescription, "
+                    f"itemValue, accountName FROM `{accountHolder[1]}` WHERE itemName = '{itemName}'")
+        validItemName = cur.fetchone()
+        if validItemName is None:
+            e.color = discord.Color.red()
+            e.title = "Item Not Found"
+            e.description = "This item is not registered to your account Please try again!"
+            await ques.edit(embed=e)
+            return
+
+        e.color = discord.Color.green()
+        e.title = f"{validItemName[4]}"
+        e.description = ""
+        e.add_field(name="*Item Name:* ", value=f"***{validItemName[0]}***")
+        e.add_field(name="*Item Category:* ", value=f"***{validItemName[1]}***")
+        e.add_field(name="*Item Description:* ", value=f"***{validItemName[2]}***")
+        e.add_field(name="*Item Value:* ", value=f"***{validItemName[3]}***")
+        await ques.edit(embed=e)
+        return
+
+    async def item_delete(self, ctx, ques):
+        e = discord.Embed(title='Item Delete!')
+        e.timestamp = datetime.utcnow()
+        e.set_footer(text=self.bot.user.name, icon_url=self.bot.user.avatar_url)
+        cur = conn.cursor()
+
+        # Check account details and balance
+        e.description = 'Please type in the corresponding bank account name which is linked to that item.\n' \
+                        'Type “cancel” to cancel this form.'
+        await ques.edit(embed=e)
+        accountName = await self.wait_for(ctx, ques)
+
+        if accountName == 'cancel':
+            await self.item_cancel(ques)
+            return
+
+        cur.execute(f"SELECT accountBal, accountNo FROM accounts WHERE accountName = '{accountName}'")
+        accountHolder = cur.fetchone()
+        if accountHolder is None:
+            e.color = discord.Color.red()
+            e.title = "Item Deletion Error"
+            e.description = "This is not a valid bank account name and therefore your application has been " \
+                            "terminated. Please try again by using !item"
+            await ques.edit(embed=e)
+            return
+
+        # Ask itemName
+        e.description = 'Please enter the item name you wish to permanently remove from your inventory.\n' \
+                        'Type “cancel” to cancel this form.'
+        await ques.edit(embed=e)
+        itemName = await self.wait_for(ctx, ques)
+
+        if accountName == 'cancel':
+            await self.item_cancel(ques)
+            return
+
+        cur.execute(f"SELECT itemName, itemCategory, itemDescription, "
+                    f"itemValue, accountName FROM `{accountHolder[1]}` WHERE itemName = '{itemName}'")
+        validItemName = cur.fetchone()
+        if validItemName is None:
+            e.color = discord.Color.red()
+            e.title = "Item Not Found"
+            e.description = "This item is not registered to your account Please try again!"
+            await ques.edit(embed=e)
+            return
+
+        e.color = discord.Color.green()
+        e.title = f"Item Delete!"
+        e.description = f"You have selected **{itemName}**"
+        await ques.edit(embed=e)
+        confirm = await ctx.prompt("Are you sure you wish to permanently delete this item from your inventory? "
+                                   "Its item value will not be reimbursed.")
         if not confirm:
-            e.title = 'Item Creation'
-            e.description = "Application has been terminated."
+            e.color = discord.Color.red()
+            e.title = "Item Deletion Terminated!"
             await ques.edit(embed=e)
             return
+
+        cur.execute(f"DELETE FROM `{accountHolder[1]}` WHERE itemName = '{itemName}'")
+        cur.close()
+        conn.commit()
+        e.title = "Item Removed!"
+        await ctx.send(embed=e)
 
     @commands.command(name='item')
     @commands.guild_only()
@@ -190,11 +398,68 @@ class Item(commands.Cog, name='Items'):
             await self.item_cancel(ques)
         elif reply.lower() == 'create':
             await self.item_create(ctx, ques)
+        elif reply.lower() == 'edit':
+            await self.item_edit(ctx, ques)
+        elif reply.lower() == 'show':
+            await self.item_show(ctx, ques)
+        elif reply.lower() == 'delete':
+            await self.item_delete(ctx, ques)
         else:
-            e.description = "I did'nt recognize that your sayin'! \nPlease try again!"
+            e.description = "I did'nt recognize what your sayin'! \nPlease try again!"
             await ques.edit(embed=e)
 
     @item_menu.error
+    async def item_error(self, ctx, error):
+        if isinstance(error, commands.CheckFailure):
+            e = discord.Embed(color=self.bot.color)
+            e.timestamp = datetime.utcnow()
+            e.set_footer(text=self.bot.user.name, icon_url=self.bot.user.avatar_url)
+            e.description = "Only, account holders can have these commands!\n" \
+                            f"`{ctx.prefix}request <accountType>` - For open an new account!"
+            await ctx.send(embed=e)
+
+    @commands.command(name='inventory')
+    @commands.guild_only()
+    @is_account_holder()
+    async def my_inventory(self, ctx):
+        e = discord.Embed(color=self.bot.color)
+        e.timestamp = datetime.utcnow()
+        e.set_footer(text=self.bot.user.name, icon_url=self.bot.user.avatar_url)
+        cur = conn.cursor()
+
+        cur.execute(f"SELECT accountNo, accountName FROM accounts WHERE user_id = {ctx.author.id}")
+        accounts = cur.fetchall()
+        if len(accounts) <= 0:
+            e.title = "Uh.. You do'nt have any bank account."
+            await ctx.send(embed=e)
+            return
+
+        headers = ["ItemOwner", "ItemCategory", "ItemName", "ItemInfo", "ItemValue", "AccountName"]
+        table = TabularData()
+        table.set_columns(headers)
+
+        full = []
+        for account in accounts:
+            cur.execute(f"SELECT itemName, itemCategory, itemDescription, itemValue, accountName FROM `{account[0]}`")
+            items = cur.fetchall()
+            for item in items:
+                this = [f"{ctx.author.name}", f"{item[1]}", f"{item[0]}", f"{item[2]}",
+                        f"{currency(item[3], grouping=True)}", f"{item[4]}"]
+                full.append(this)
+
+        table.add_rows(list(r for r in full))
+        render = table.render()
+
+        fmt = f'```\n{render}\n```\n*You got {plural(len(accounts)):item}*'
+        if len(fmt) > 2000:
+            fp = io.BytesIO(fmt.encode('utf-8'))
+            await ctx.send('Too many results...', file=discord.File(fp, 'items.txt'))
+        else:
+            await ctx.send(fmt)
+
+        cur.close()
+
+    @my_inventory.error
     async def item_error(self, ctx, error):
         if isinstance(error, commands.CheckFailure):
             e = discord.Embed(color=self.bot.color)
@@ -218,6 +483,18 @@ class Item(commands.Cog, name='Items'):
         e = discord.Embed(color=self.bot.color)
         e.timestamp = datetime.utcnow()
         e.set_footer(text=self.bot.user.name, icon_url=self.bot.user.avatar_url)
+
+        with open('src/itemC.json', encoding='utf-8') as f:
+            data = json.load(f)
+
+        try:
+            exists = data["iC"][f"{itemCategoryName}"]
+        except KeyError:
+            pass
+        else:
+            e.description = f"**{itemCategoryName}** already exists"
+            await ctx.send(embed=e)
+            return
 
         e.title = "Item Category Creation"
         e.description = f"Please give a taxType of item **{itemCategoryName}**\n" \
@@ -248,49 +525,147 @@ class Item(commands.Cog, name='Items'):
             await ques.edit(embed=e)
             return
 
-        cur.execute(f"INSERT INTO itemCategory (iCName, iCTaxType) VALUES ('{itemCategoryName}', '{iCTaxType}')")
-        cur.close()
-        conn.commit()
+        # cur.execute(f"INSERT INTO itemCategory (iCName, iCTaxType) VALUES ('{itemCategoryName}', '{iCTaxType}')")
+        # cur.close()
+        # conn.commit()
+        newItemCategory = {f"{itemCategoryName}": [f"{iCTaxType}"]}
+        with open('src/itemC.json', 'w', encoding='utf-8') as fp:
+            data["iC"].update(newItemCategory)
+            json.dump(data, fp, indent=2)
 
-    @iC.command(name='remove', aliases=["delete"])
+        e.title = "Item Category Creation Complete!"
+        e.description = f"**{itemCategoryName}** added!"
+        await ques.edit(embed=e)
+
+    @iC.command(name='delete')
     async def iC_delete(self, ctx, *, itemCategoryName):
         """Creates a new item category called itemcategory_name"""
         e = discord.Embed(color=self.bot.color)
         e.timestamp = datetime.utcnow()
         e.set_footer(text=self.bot.user.name, icon_url=self.bot.user.avatar_url)
-
-        e.title = "Item Category Delete!"
-        e.description = f"Please give a taxType of item **{itemCategoryName}**\n" \
-                        f"Type 'cancel' for Terminate!"
-        ques = await ctx.send(embed=e)
-        iCTaxType = await self.wait_for(ctx, ques)
-
-        if iCTaxType == 'cancel':
-            e.title = 'Item Category Terminated!'
-            e.description = f"Creation of **{itemCategoryName}** Terminated at the end!"
-            await ques.edit(embed=e)
-            return
         cur = conn.cursor()
 
-        cur.execute(f"SELECT taxType, multiplier FROM taxType WHERE taxType = '{iCTaxType}'")
-        valid = cur.fetchone()
-        if valid is None:
+        with open('src/itemC.json', encoding='utf-8') as f:
+            data = json.load(f)
+
+        try:
+            valid = data["iC"][f"{itemCategoryName}"]
+        except KeyError:
             e.title = 'Item Category Terminated!'
-            e.description = f"**{iCTaxType}** is not any taxType so far! Please try again!"
-            await ques.edit(embed=e)
+            e.description = f"**{itemCategoryName}** is not any itemCategory so far! Please try again!"
+            await ctx.edit(embed=e)
             return
 
-        confirm = await ctx.prompt(f"Are you sure that you wants to remove itemcategory called "
+        confirm = await ctx.prompt(f"Are you sure that you wants to remove itemCategory called "
                                    f"**{itemCategoryName}**")
         if not confirm:
             e.title = 'Item Category Terminated!'
-            e.description = f"Creation of **{itemCategoryName}** Terminated at the end!"
-            await ques.edit(embed=e)
+            e.description = f"Removing of **{itemCategoryName}** Terminated at the end!"
+            await ctx.edit(embed=e)
             return
 
-        cur.execute(f"INSERT INTO itemCategory (iCName, iCTaxType) VALUES ('{itemCategoryName}', '{iCTaxType}')")
-        cur.close()
-        conn.commit()
+        with open('src/itemC.json', 'w', encoding='utf-8') as fp:
+            del data["iC"][f"{itemCategoryName}"]
+            json.dump(data, fp, indent=2)
+
+        e.title = "Item Category Delete Successfully!"
+        await ctx.send(embed=e)
+
+    @iC.command(name='add')
+    async def iC_add_taxType(self, ctx, itemCategoryName, taxType):
+        """This command will add any taxType to an existing ItemCategory!"""
+        e = discord.Embed(color=self.bot.color)
+        e.timestamp = datetime.utcnow()
+        e.set_footer(text=self.bot.user.name, icon_url=self.bot.user.avatar_url)
+        cur = conn.cursor()
+
+        with open('src/itemC.json', encoding='utf-8') as f:
+            data = json.load(f)
+
+        try:
+            valid = data["iC"][f"{itemCategoryName}"]
+        except KeyError:
+            e.title = 'Item Category Terminated!'
+            e.description = f"**{itemCategoryName}** is not any itemCategory so far! Please try again!"
+            await ctx.edit(embed=e)
+            return
+
+        cur.execute(f"SELECT taxType FROM taxType WHERE taxType = '{taxType}'")
+        validTaxType = cur.fetchone()
+        if validTaxType is None:
+            e.description = f"**{taxType}** is not a valid tax type! Please try again!"
+            await ctx.send(embed=e)
+            return
+
+        taxTypes = data["iC"][f"{itemCategoryName}"]
+        if taxType in taxTypes:
+            e.description = f"**{taxType}** is already added to **{itemCategoryName}**"
+            await ctx.send(embed=e)
+            return
+
+        with open('src/itemC.json', 'w', encoding='utf-8') as fp:
+            data["iC"][f"{itemCategoryName}"].append(taxType)
+            json.dump(data, fp, indent=2)
+        e.title = "Success!"
+        e.description = f"**{taxType}** added to **{itemCategoryName}**"
+        await ctx.send(embed=e)
+
+    @iC.command(name='remove')
+    async def iC_remove_taxType(self, ctx, itemCategoryName, taxType):
+        """This command will able to remove the existing tax types from any item."""
+        e = discord.Embed(color=self.bot.color)
+        e.timestamp = datetime.utcnow()
+        e.set_footer(text=self.bot.user.name, icon_url=self.bot.user.avatar_url)
+        cur = conn.cursor()
+
+        with open('src/itemC.json', encoding='utf-8') as f:
+            data = json.load(f)
+
+        try:
+            valid = data["iC"][f"{itemCategoryName}"]
+        except KeyError:
+            e.title = 'Item Category Terminated!'
+            e.description = f"**{itemCategoryName}** is not any itemCategory so far! Please try again!"
+            await ctx.edit(embed=e)
+            return
+
+        taxTypes = data["iC"][f"{itemCategoryName}"]
+        if taxType not in taxTypes:
+            e.description = f"**{taxType}** is not added to **{itemCategoryName}** yet!"
+            await ctx.send(embed=e)
+            return
+
+        with open('src/itemC.json', 'w', encoding='utf-8') as fp:
+            data["iC"][f"{itemCategoryName}"].remove(taxType)
+            json.dump(data, fp, indent=2)
+        e.title = "Success!"
+        e.description = f"**{taxType}** removed from **{itemCategoryName}**"
+        await ctx.send(embed=e)
+
+    @iC.command(name='list')
+    async def iC_list(self, ctx):
+        """Give you the list of all the itemCategory and there taxTypes."""
+        e = discord.Embed(color=self.bot.color)
+        e.timestamp = datetime.utcnow()
+        e.set_footer(text=self.bot.user.name, icon_url=self.bot.user.avatar_url)
+
+        with open('src/itemC.json', encoding='utf-8') as f:
+            data = json.load(f)
+
+        msg = ""
+        if len(data["iC"]) <= 0:
+            e.title = "Item Category List!"
+            e.description = "There arne't any category to see!"
+            await ctx.send(embed=e)
+            return
+        for category in data["iC"]:
+            taxTypes = data["iC"][category]
+            taxes = ', '.join(taxTypes)
+            msg += f"{category} - {taxes}\n"
+
+        e.title = "Item Category List!"
+        e.description = f"```{msg}```"
+        await ctx.send(embed=e)
 
     @commands.group(name='taxtype', aliases=["tt"], invoke_without_command=True, case_insensitive=False)
     @commands.guild_only()

@@ -1,0 +1,14 @@
+{
+  "iC": {
+    "test": [
+      "tax_use",
+      "tax_sales"
+    ],
+    "deed": [
+      "tax_income"
+    ],
+    "painting": [
+      "tax_sales"
+    ]
+  }
+}
