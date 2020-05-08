@@ -55,6 +55,8 @@ def is_account_holder():
         if accountReg is not None:
             if accountReg[0] == 'True':
                 return True
+            if ctx.author.guild_permissions.administrator:
+                return True
         return False
     return commands.check(predicate)
 
@@ -173,6 +175,9 @@ class Bank(commands.Cog, name='Bank'):
             cur.execute(f"SELECT accountBal, accountName FROM accounts "
                         f"WHERE accountNo = {int(accountNameOrNo)} AND "
                         f"(user_id = {ctx.author.id} OR authorize_id = {ctx.author.id})")
+        elif ctx.author.guild_permissions.administrator:
+            cur.execute(f"SELECT accountBal, accountName FROM accounts "
+                        f"WHERE accountName = '{str(accountNameOrNo)}'")
         else:
             cur.execute(f"SELECT accountBal, accountName FROM accounts "
                         f"WHERE accountName = '{str(accountNameOrNo)}' AND "
@@ -183,7 +188,7 @@ class Bank(commands.Cog, name='Bank'):
         if account is None:
             e.color = discord.Colour.red()
             e.title = "**Account Balance**"
-            e.description = f"Account **'{accountNameOrNo}'** does'nt belongs to you!"
+            e.description = f"Account **'{accountNameOrNo}'** does'nt belongs to you or not Found!"
             await ctx.send(embed=e)
             return
 
@@ -192,7 +197,7 @@ class Bank(commands.Cog, name='Bank'):
         await ctx.send(embed=e)
 
     @banks.command(name='transfer')
-    async def bank_transfer(self, ctx, accountNameOrNo, amount, payeeAccountNameOrNo):
+    async def bank_transfer(self, ctx, accountNameOrNo, amount: float, payeeAccountNameOrNo):
         """Transfers amount to another account holder"""
         e = discord.Embed(color=self.bot.color)
         e.timestamp = datetime.utcnow()
@@ -216,7 +221,7 @@ class Bank(commands.Cog, name='Bank'):
             await ctx.send(embed=e)
             return
 
-        if amount > userAccount[0]:
+        if float(amount) > float(userAccount[0]):
             e.title = "**Account Transaction**"
             e.description = f"Your account **'{userAccount[1]}'** does not have enough funds to transfer " \
                             f"{currency(amount, grouping=True)}\n"
@@ -245,7 +250,7 @@ class Bank(commands.Cog, name='Bank'):
             await ctx.send(embed=e)
             return
 
-        payeeAccountUser = self.bot.get_member(payeeAccount[1])
+        payeeAccountUser = ctx.guild.get_member(int(payeeAccount[1]))
 
         cur.execute(f"UPDATE accounts SET accountBal = {userAccount[0] - amount} "
                     f"WHERE accountName = '{userAccount[1]}'")
@@ -256,7 +261,7 @@ class Bank(commands.Cog, name='Bank'):
 
         e.color = discord.Color.green()
         e.title = "**Account Transaction**"
-        e.description = f"Your account **'{userAccount[1]}'** transferred {currency(amount, grouping=True)} " \
+        e.description = f"Your account **'{accountNameOrNo}'** transferred {currency(amount, grouping=True)} " \
                         f"to {payeeAccountUser.mention}'s **'{payeeAccount[2]}'** banking account."
         await ctx.send(embed=e)
 
@@ -390,6 +395,9 @@ class Bank(commands.Cog, name='Bank'):
         if accountNameOrNo.isdigit():
             cur.execute(f"SELECT accountName FROM accounts "
                         f"WHERE accountNo = {int(accountNameOrNo)} AND user_id = {ctx.author.id}")
+        elif ctx.author.guild_permissions.administrator:
+            cur.execute(f"SELECT accountBal, accountName FROM accounts "
+                        f"WHERE accountName = '{str(accountNameOrNo)}'")
         else:
             cur.execute(f"SELECT accountName FROM accounts "
                         f"WHERE accountName = '{str(accountNameOrNo)}' AND user_id = {ctx.author.id}")
@@ -398,7 +406,7 @@ class Bank(commands.Cog, name='Bank'):
         if account is None:
             e.color = discord.Colour.red()
             e.title = "**Account Termination**"
-            e.description = f"Account **'{accountNameOrNo}'** does'nt belongs to you!"
+            e.description = f"Account **'{accountNameOrNo}'** does'nt belongs to you or not Found!"
             await ctx.send(embed=e)
             return
 
@@ -420,6 +428,50 @@ class Bank(commands.Cog, name='Bank'):
             e.title = "**Account Termination**"
             e.description = "Failed! Please contact staff for further assessment!"
             await ctx.send(embed=e)
+
+    @banks.command(name='balance')
+    async def bank_balance(self, ctx, accountName, action, amount: float):
+        """Only admin command for adding/subtracting/set balance of any account!"""
+        e = discord.Embed(color=self.bot.color)
+        e.timestamp = datetime.utcnow()
+        e.set_footer(text=self.bot.user.name, icon_url=self.bot.user.avatar_url)
+        cur = conn.cursor()
+
+        if not ctx.author.guild_permissions.administrator:
+            e.title = "Permissions Error!"
+            e.description = "You don't have admin permission to use this command! :D"
+            return
+
+        cur.execute(f"SELECT accountBal, accountName FROM accounts "
+                    f"WHERE accountName = '{accountName}'")
+        account = cur.fetchone()
+
+        if account is None:
+            e.color = discord.Colour.red()
+            e.title = "**Account Balance**"
+            e.description = f"Account **'{accountName}'** not Found!"
+            await ctx.send(embed=e)
+            return
+
+        if action == '+':
+            cur.execute(f"UPDATE accounts SET accountBal = {float(account[0]) + amount} "
+                        f"WHERE accountName = '{accountName}'")
+            conn.commit()
+        elif action == '-':
+            cur.execute(f"UPDATE accounts SET accountBal = {float(account[0]) - amount} "
+                        f"WHERE accountName = '{accountName}'")
+            conn.commit()
+        elif action.lower() == 'set':
+            cur.execute(f"UPDATE accounts SET accountBal = {amount} WHERE accountName = '{accountName}'")
+            conn.commit()
+        else:
+            e.description = 'Unknown operation, try `+`, `-` or `set`.'
+            await ctx.send(embed=e)
+            return
+
+        e.title = "**Account Balance**"
+        e.description = f"Done!"
+        await ctx.send(embed=e)
 
     @banks.group(name='authorize')
     async def authorization(self, ctx):
@@ -458,7 +510,7 @@ class Bank(commands.Cog, name='Bank'):
             await ctx.send(embed=e)
             return
 
-        if account[2] != 'personal':
+        if account[2] == 'personal':
             e.color = discord.Colour.red()
             e.title = "**Account Authorization**"
             e.description = f"Account **'{accountNameOrNo}'** is **{account[2]}**, which can't be use to authorize!"
@@ -537,7 +589,7 @@ class Bank(commands.Cog, name='Bank'):
         cur.close()
 
     # ACCOUNT
-    @commands.command(name='account')
+    @commands.command(name='account', aliases=["accounts"])
     @commands.guild_only()
     async def accounts(self, ctx):
         """Give the account view on a tabular form"""

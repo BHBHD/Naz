@@ -8,6 +8,7 @@ import logging
 import discord
 import sqlite3
 import locale
+import typing
 import json
 import io
 
@@ -32,7 +33,8 @@ def is_account_holder():
         if ctx.guild is None:
             return False
         cur = conn.cursor()
-        cur.execute(f"SELECT accountReg FROM accounts WHERE user_id = {ctx.author.id}")
+        cur.execute(f"SELECT accountReg FROM accounts "
+                    f"WHERE user_id = {ctx.author.id} OR authorize_id = {ctx.author.id}")
         accountReg = cur.fetchone()
         if accountReg is not None:
             if accountReg[0] == 'True':
@@ -418,6 +420,178 @@ class Item(commands.Cog, name='Items'):
                             f"`{ctx.prefix}request <accountType>` - For open an new account!"
             await ctx.send(embed=e)
 
+    @commands.group(name='trade', case_insensitive=False, invoke_without_command=True)
+    @commands.guild_only()
+    @is_account_holder()
+    async def trade_info(self, ctx):
+        """Give the trade command info and there use."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
+
+    @trade_info.command(name='sell')
+    async def trade_sell(self, ctx, member: discord.Member, itemName, accountName, price: int):
+        """Trade item to other server members"""
+        e = discord.Embed(color=self.bot.color)
+        e.timestamp = datetime.utcnow()
+        e.set_footer(text=self.bot.user.name, icon_url=self.bot.user.avatar_url)
+        cur = conn.cursor()
+
+        # Check buyer has any account or not.
+        cur.execute(f"SELECT accountNo FROM accounts WHERE user_id = {ctx.author.id} OR authorize_id = {ctx.author.id}")
+        valid = cur.fetchone()
+        if valid is None:
+            e.color = discord.Color.red()
+            e.title = "Trade Failed"
+            e.description = f"User **{member.name}** doesnt have any account of his own or authorized!"
+            await ctx.send(embed=e)
+            return
+
+        # Check seller have that item in his account or not.
+        cur.execute(f"SELECT accountNo FROM accounts WHERE user_id = {ctx.author.id} OR authorize_id = {ctx.author.id}")
+        sellerAccounts = cur.fetchall()
+        accountInNo = 0
+        itemDetails = []
+        for sellerAccount in sellerAccounts:
+            try:
+                cur.execute(f"SELECT itemName, itemCategory, itemDescription, itemValue, accountName "
+                            f"FROM `{sellerAccount[0]}` WHERE itemName = '{itemName}'")
+                itemDetails = cur.fetchone()
+                if itemDetails is None:
+                    e.color = discord.Color.red()
+                    e.title = "Trade Failed"
+                    e.description = "Item not found! Please try again!"
+                    await ctx.send(embed=e)
+                    return
+                accountInNo = sellerAccount[0]
+            except sqlite3.OperationalError:
+                pass
+
+        # Check is that trade is already exists of not.
+        with open('src/trade.json', 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        try:
+            itemExists = data["trades"][f"{itemName}"]
+            e.title = "Trade Failed"
+            e.description = "This item is already on sale."
+            await ctx.send(embed=e)
+            return
+        except KeyError:
+            pass
+
+        # Add item for trade.
+        newTradeTemplate = {f"{itemName}": [accountInNo, ctx.author.id, member.id, f"{accountName}", price]}
+
+        with open('src/trade.json', 'w', encoding='utf-8') as fp:
+            data["trades"].update(newTradeTemplate)
+            json.dump(data, fp, indent=2)
+
+        # Publish the msg in the channel
+        e.color = discord.Color.green()
+        e.title = "Item up for Sale!"
+        e.description = f"To buy this item use command:\n" \
+                        f"`{ctx.prefix}trade buy {itemName} <accountNo>`"
+        e.add_field(name="*Item Name:* ", value=f"***{itemDetails[0]}***")
+        e.add_field(name="*Item Category:* ", value=f"***{itemDetails[1]}***")
+        e.add_field(name="*Item Description:* ", value=f"***{itemDetails[2]}***")
+        e.add_field(name="*Item Value:* ", value=f"***{currency(itemDetails[3], grouping=True)}***")
+        await ctx.send(f"{member.mention}", embed=e)
+
+    @trade_info.command(name='buy')
+    async def trade_buy(self, ctx, itemName, accountName):
+        """Buy any active item trades"""
+        # Check buyer has any account or not.
+        e = discord.Embed(color=self.bot.color)
+        e.timestamp = datetime.utcnow()
+        e.set_footer(text=self.bot.user.name, icon_url=self.bot.user.avatar_url)
+        cur = conn.cursor()
+
+        # Check user have an valid account or not.
+        cur.execute(f"SELECT accountNo, accountBal FROM accounts "
+                    f"WHERE accountName = '{accountName}' AND "
+                    f"(user_id = {ctx.author.id} OR authorize_id = {ctx.author.id})")
+        valid = cur.fetchone()
+        if valid is None:
+            e.color = discord.Color.red()
+            e.title = "Trade Failed"
+            e.description = f"You doesnt have any account of your own or authorized!"
+            await ctx.send(embed=e)
+            return
+
+        # Check if item is on sell or not.
+        with open('src/trade.json', 'r', encoding='utf-8') as f:
+            trade = json.load(f)
+        try:
+            itemExists = trade["trades"][f"{itemName}"]
+        except KeyError:
+            e.color = discord.Color.red()
+            e.title = "Trade Failed"
+            e.description = "This item is on sale."
+            await ctx.send(embed=e)
+            return
+
+        if itemExists[2] != ctx.author.id:
+            e.color = discord.Color.red()
+            e.title = "Trade Failed"
+            e.description = "Sorry, This item is not meant for you to buy!"
+            await ctx.send(embed=e)
+            return
+
+        # Check if user have sufficient money to buy or not.
+        if float(valid[1]) <= float(itemExists[4]):
+            e.color = discord.Color.red()
+            e.title = "Trade Failed"
+            e.description = f"Sorry, You don't have sufficient balance on your account **{accountName}**"
+            await ctx.send(embed=e)
+            return
+
+        # Delete item from sellers account.
+        cur.execute(f"SELECT itemName, itemCategory, itemDescription, itemValue, accountName "
+                    f"FROM `{itemExists[0]}` WHERE itemName = '{itemName}'")
+        sellerItem = cur.fetchone()
+        cur.execute(f"DELETE FROM `{itemExists[0]}` WHERE itemName = '{itemName}'")
+        conn.commit()
+
+        # Add item to buys account.
+        cur.execute(
+            f"CREATE TABLE IF NOT EXISTS `{valid[0]}`('itemName' TEXT, 'itemCategory' TEXT, "
+            f"'itemDescription' TEXT, 'itemValue' REAL, 'accountName' TEXT)")
+        cur.execute(f"INSERT INTO `{valid[0]}` (itemName, itemCategory, itemDescription, "
+                    f"itemValue, accountName) VALUES ('{sellerItem[0]}', '{sellerItem[1]}', "
+                    f"'{sellerItem[2]}', {sellerItem[3]}, '{accountName}')")
+        conn.commit()
+
+        # Update buyer accountBal.
+        cur.execute(f"SELECT accountBal FROM accounts WHERE accountNo = {itemExists[0]}")
+        sellerAccount = cur.fetchone()
+        cur.execute(f"UPDATE accounts SET accountBal = {float(valid[1]) - float(itemExists[4])} "
+                    f"WHERE accountName = '{accountName}'")
+        conn.commit()
+
+        # Calculate Multiplier
+        with open('src/itemC.json', encoding='utf-8') as f:
+            data = json.load(f)
+        multipliers = data["iC"][f"{sellerItem[1]}"]
+        addMultiplier = 0
+        for multiplier in multipliers:
+            cur.execute(f"SELECT multiplier FROM taxType WHERE taxType = '{multiplier}'")
+            addOne = cur.fetchone()
+            addMultiplier += float(addOne[0])
+        multiplier = float(itemExists[4]) * 1.0 - addMultiplier
+
+        # Update seller accountBal.
+        cur.execute(f"UPDATE accounts SET accountBal = {float(sellerAccount[0]) - multiplier} "
+                    f"WHERE accountNo = {itemExists[0]}")
+        conn.commit()
+
+        with open('src/trade.json', 'w') as fp:
+            del trade["trades"][f"{itemName}"]
+            json.dump(trade, fp, indent=2)
+
+        e.color = discord.Color.green()
+        e.title = "Success"
+        e.description = f"You successfully bought the item **{itemName}**"
+        await ctx.send(embed=e)
+
     @commands.command(name='inventory')
     @commands.guild_only()
     @is_account_holder()
@@ -440,17 +614,29 @@ class Item(commands.Cog, name='Items'):
 
         full = []
         for account in accounts:
-            cur.execute(f"SELECT itemName, itemCategory, itemDescription, itemValue, accountName FROM `{account[0]}`")
+            try:
+                cur.execute(f"SELECT itemName, itemCategory, itemDescription, itemValue, accountName "
+                            f"FROM `{account[0]}`")
+            except sqlite3.OperationalError:
+                e.title = "Item List"
+                e.description = "You don't have any item!"
+                await ctx.send(embed=e)
+                return
             items = cur.fetchall()
             for item in items:
                 this = [f"{ctx.author.name}", f"{item[1]}", f"{item[0]}", f"{item[2]}",
                         f"{currency(item[3], grouping=True)}", f"{item[4]}"]
                 full.append(this)
 
+        if len(full) <= 0:
+            e.title = "Uh.. You do'nt have any items."
+            await ctx.send(embed=e)
+            return
+
         table.add_rows(list(r for r in full))
         render = table.render()
 
-        fmt = f'```\n{render}\n```\n*You got {plural(len(accounts)):item}*'
+        fmt = f'```\n{render}\n```\n*You got {plural(len(full)):item}*'
         if len(fmt) > 2000:
             fp = io.BytesIO(fmt.encode('utf-8'))
             await ctx.send('Too many results...', file=discord.File(fp, 'items.txt'))
@@ -572,7 +758,7 @@ class Item(commands.Cog, name='Items'):
         await ctx.send(embed=e)
 
     @iC.command(name='add')
-    async def iC_add_taxType(self, ctx, itemCategoryName, taxType):
+    async def iC_add(self, ctx, itemCategoryName, taxType):
         """This command will add any taxType to an existing ItemCategory!"""
         e = discord.Embed(color=self.bot.color)
         e.timestamp = datetime.utcnow()
@@ -611,7 +797,7 @@ class Item(commands.Cog, name='Items'):
         await ctx.send(embed=e)
 
     @iC.command(name='remove')
-    async def iC_remove_taxType(self, ctx, itemCategoryName, taxType):
+    async def iC_remove(self, ctx, itemCategoryName, taxType):
         """This command will able to remove the existing tax types from any item."""
         e = discord.Embed(color=self.bot.color)
         e.timestamp = datetime.utcnow()
@@ -794,4 +980,3 @@ class Item(commands.Cog, name='Items'):
 
 def setup(bot):
     bot.add_cog(Item(bot))
-

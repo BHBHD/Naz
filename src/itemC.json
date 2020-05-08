@@ -5,7 +5,8 @@
       "tax_sales"
     ],
     "deed": [
-      "tax_income"
+      "tax_income",
+      "tax_use"
     ],
     "painting": [
       "tax_sales"
